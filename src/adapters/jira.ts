@@ -7,7 +7,6 @@ import { IPlatformAdapter } from '../types';
 import { handleMessage } from '../orchestrator/orchestrator';
 import * as db from '../db/conversations';
 import * as codebaseDb from '../db/codebases';
-import * as sessionDb from '../db/sessions';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { readdir, access } from 'fs/promises';
@@ -492,13 +491,9 @@ ${userComment}`;
       console.log(`[Jira] Processing slash command: ${firstLine}`);
 
       if (isCommandInvoke) {
-        const activeSession = await sessionDb.getActiveSession(existingConv.id);
-        const isFirstCommandInvoke = !activeSession;
-
-        if (isFirstCommandInvoke) {
-          console.log('[Jira] Adding issue reference for first /command-invoke');
-          contextToAppend = `Jira Issue ${issueKey}: "${issue.fields.summary}"\nProject: ${issue.fields.project.name}`;
-        }
+        // Always include full issue context for /command-invoke so the AI understands the ticket
+        console.log('[Jira] Adding full issue context for /command-invoke');
+        contextToAppend = this.buildIssueContext(issue, '').trim();
       }
     } else if (isNewConversation) {
       finalMessage = this.buildIssueContext(issue, strippedComment);

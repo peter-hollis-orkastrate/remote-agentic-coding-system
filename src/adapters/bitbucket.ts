@@ -7,7 +7,6 @@ import { IPlatformAdapter } from '../types';
 import { handleMessage } from '../orchestrator/orchestrator';
 import * as db from '../db/conversations';
 import * as codebaseDb from '../db/codebases';
-import * as sessionDb from '../db/sessions';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { readdir, access } from 'fs/promises';
@@ -590,16 +589,12 @@ ${userComment}`;
       console.log(`[Bitbucket] Processing slash command: ${firstLine}`);
 
       if (isCommandInvoke) {
-        const activeSession = await sessionDb.getActiveSession(existingConv.id);
-        const isFirstCommandInvoke = !activeSession;
-
-        if (isFirstCommandInvoke) {
-          console.log('[Bitbucket] Adding PR/issue reference for first /command-invoke');
-          if (type === 'pr' && pullRequest) {
-            contextToAppend = `Bitbucket PR #${pullRequest.id}: "${pullRequest.title}"\nBranch: ${pullRequest.source.branch.name} → ${pullRequest.destination.branch.name}`;
-          } else if (type === 'issue' && issue) {
-            contextToAppend = `Bitbucket Issue #${issue.id}: "${issue.title}"`;
-          }
+        // Always include full PR/issue context for /command-invoke so the AI understands the context
+        console.log('[Bitbucket] Adding full PR/issue context for /command-invoke');
+        if (type === 'pr' && pullRequest) {
+          contextToAppend = this.buildPRContext(pullRequest, '').trim();
+        } else if (type === 'issue' && issue) {
+          contextToAppend = this.buildIssueContext(issue, '').trim();
         }
       }
     } else if (isNewConversation) {
