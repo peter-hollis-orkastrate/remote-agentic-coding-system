@@ -35,7 +35,7 @@ Control AI coding assistants (Claude Code, Codex) remotely from Telegram, GitHub
 
 **Get started:**
 ```bash
-git clone https://github.com/coleam/remote-agentic-coding-system
+git clone https://github.com/coleam00/remote-agentic-coding-system
 cd remote-agentic-coding-system
 ```
 
