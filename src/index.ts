@@ -100,16 +100,42 @@ async function main(): Promise<void> {
     process.env.BITBUCKET_APP_PASSWORD &&
     process.env.BITBUCKET_WEBHOOK_SECRET
   ) {
+    // Check if auto-review is enabled
+    const autoReviewEnabled = process.env.BITBUCKET_AUTO_REVIEW === 'true';
+    const hasAutoReviewConfig =
+      process.env.JIRA_BASE_URL &&
+      process.env.JIRA_EMAIL &&
+      process.env.JIRA_API_TOKEN;
+
     bitbucket = new BitbucketAdapter({
       workspace: process.env.BITBUCKET_WORKSPACE,
       username: process.env.BITBUCKET_USERNAME,
       appPassword: process.env.BITBUCKET_APP_PASSWORD,
       webhookSecret: process.env.BITBUCKET_WEBHOOK_SECRET,
-      mention: process.env.BITBUCKET_MENTION || '@remote-agent',
+      mention: process.env.BITBUCKET_MENTION ?? '@remote-agent',
+      defaultAssistantType: process.env.DEFAULT_AI_ASSISTANT ?? 'claude',
+      // Auto-review configuration (uses Jira credentials)
+      autoReview:
+        autoReviewEnabled && hasAutoReviewConfig
+          ? {
+              enabled: true,
+              jiraBaseUrl: process.env.JIRA_BASE_URL!,
+              jiraEmail: process.env.JIRA_EMAIL!,
+              jiraApiToken: process.env.JIRA_API_TOKEN!,
+            }
+          : undefined,
     });
     await bitbucket.start();
+
+    if (autoReviewEnabled && !hasAutoReviewConfig) {
+      console.warn(
+        '[Bitbucket] Auto-review enabled but missing Jira credentials (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN)'
+      );
+    }
   } else {
-    console.log('[Bitbucket] Adapter not initialized (missing BITBUCKET_WORKSPACE, BITBUCKET_USERNAME, BITBUCKET_APP_PASSWORD, or BITBUCKET_WEBHOOK_SECRET)');
+    console.log(
+      '[Bitbucket] Adapter not initialized (missing BITBUCKET_WORKSPACE, BITBUCKET_USERNAME, BITBUCKET_APP_PASSWORD, or BITBUCKET_WEBHOOK_SECRET)'
+    );
   }
 
   // Setup Express server

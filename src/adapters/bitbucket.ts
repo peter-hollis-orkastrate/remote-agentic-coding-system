@@ -1,6 +1,7 @@
 /**
  * Bitbucket platform adapter using Bitbucket REST API and Webhooks
  * Handles pull request and issue comments with @mention detection
+ * Supports automated PR reviews on creation
  */
 import { createHmac } from 'crypto';
 import { IPlatformAdapter } from '../types';
@@ -11,6 +12,12 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { readdir, access } from 'fs/promises';
 import { join } from 'path';
+import {
+  AutoReviewService,
+  AutoReviewConfig,
+  PRContext,
+} from '../services/auto-review';
+import { getAssistantClient } from '../clients/factory';
 
 const execAsync = promisify(exec);
 
@@ -92,18 +99,49 @@ export class BitbucketAdapter implements IPlatformAdapter {
   private webhookSecret: string;
   private mention: string;
 
+  // Auto-review configuration
+  private autoReviewEnabled: boolean;
+  private autoReviewService: AutoReviewService | null = null;
+  private defaultAssistantType: string;
+
   constructor(config: {
     workspace: string;
     username: string;
     appPassword: string;
     webhookSecret: string;
     mention?: string;
+    // Auto-review configuration
+    autoReview?: {
+      enabled: boolean;
+      jiraBaseUrl: string;
+      jiraEmail: string;
+      jiraApiToken: string;
+      jiraKeyPattern?: RegExp;
+    };
+    defaultAssistantType?: string;
   }) {
     this.workspace = config.workspace;
     this.username = config.username;
     this.appPassword = config.appPassword;
     this.webhookSecret = config.webhookSecret;
-    this.mention = config.mention || '@remote-agent';
+    this.mention = config.mention ?? '@remote-agent';
+    this.defaultAssistantType = config.defaultAssistantType ?? 'claude';
+
+    // Initialize auto-review if configured
+    this.autoReviewEnabled = config.autoReview?.enabled ?? false;
+    if (this.autoReviewEnabled && config.autoReview) {
+      const autoReviewConfig: AutoReviewConfig = {
+        bitbucketUsername: config.username,
+        bitbucketAppPassword: config.appPassword,
+        jiraBaseUrl: config.autoReview.jiraBaseUrl,
+        jiraEmail: config.autoReview.jiraEmail,
+        jiraApiToken: config.autoReview.jiraApiToken,
+        jiraKeyPattern: config.autoReview.jiraKeyPattern,
+      };
+      this.autoReviewService = new AutoReviewService(autoReviewConfig);
+      console.log('[Bitbucket] Auto-review enabled');
+    }
+
     console.log(
       '[Bitbucket] Adapter initialized for workspace',
       this.workspace,
@@ -520,6 +558,113 @@ ${userComment}`;
   }
 
   /**
+   * Handle automated PR review
+   * Triggered on PR creation when auto-review is enabled
+   */
+  private async handleAutoReview(
+    event: BitbucketWebhookEvent,
+    workspace: string,
+    repoSlug: string
+  ): Promise<void> {
+    if (!this.autoReviewService || !event.pullrequest) {
+      return;
+    }
+
+    const pr = event.pullrequest;
+    console.log(`[Bitbucket] Starting auto-review for PR #${pr.id}: ${pr.title}`);
+
+    // Build PR context
+    const prContext: PRContext = {
+      workspace,
+      repoSlug,
+      prId: pr.id,
+      title: pr.title,
+      description: pr.description,
+      author: pr.author.display_name,
+      sourceBranch: pr.source.branch.name,
+      destinationBranch: pr.destination.branch.name,
+      diffUrl: pr.links.diff.href,
+    };
+
+    // Extract Jira key from PR
+    const jiraKey = this.autoReviewService.extractJiraKey(prContext);
+    if (jiraKey) {
+      console.log(`[Bitbucket] Found Jira key: ${jiraKey}`);
+    } else {
+      console.log('[Bitbucket] No Jira key found in PR title/branch/description');
+    }
+
+    // Fetch PR diff and changed files
+    const [diff, changedFiles] = await Promise.all([
+      this.autoReviewService.fetchPRDiff(prContext),
+      this.autoReviewService.fetchChangedFiles(prContext),
+    ]);
+
+    if (!diff) {
+      console.error('[Bitbucket] Could not fetch PR diff, skipping auto-review');
+      return;
+    }
+
+    console.log(`[Bitbucket] Fetched diff (${diff.length} chars) and ${changedFiles.length} changed files`);
+
+    // Fetch Jira ticket if we have a key
+    const jiraTicket = jiraKey ? await this.autoReviewService.fetchJiraTicket(jiraKey) : null;
+    if (jiraTicket) {
+      console.log(`[Bitbucket] Fetched Jira ticket: ${jiraTicket.key} - ${jiraTicket.summary}`);
+    }
+
+    // Build review prompt
+    const reviewPrompt = this.autoReviewService.buildReviewPrompt(
+      prContext,
+      diff,
+      changedFiles,
+      jiraTicket
+    );
+
+    // Send to AI for review
+    console.log('[Bitbucket] Sending to AI for review...');
+    const aiClient = getAssistantClient(this.defaultAssistantType);
+
+    // Collect the AI response
+    let reviewContent = '';
+    try {
+      // Use a temporary working directory (we don't need file access for reviews)
+      for await (const msg of aiClient.sendQuery(reviewPrompt, '/tmp')) {
+        if (msg.type === 'assistant' && msg.content) {
+          reviewContent += msg.content;
+        }
+      }
+    } catch (error) {
+      console.error('[Bitbucket] AI review failed:', error);
+      await this.autoReviewService.postBitbucketComment(
+        prContext,
+        '⚠️ Automated code review failed. Please trigger a manual review.'
+      );
+      return;
+    }
+
+    if (!reviewContent) {
+      console.error('[Bitbucket] AI returned empty review');
+      return;
+    }
+
+    console.log(`[Bitbucket] Received review (${reviewContent.length} chars)`);
+
+    // Format and post reviews
+    const bitbucketReview = this.autoReviewService.formatBitbucketReview(reviewContent, jiraKey);
+    const bitbucketPosted = await this.autoReviewService.postBitbucketComment(prContext, bitbucketReview);
+
+    if (jiraKey) {
+      const jiraReview = this.autoReviewService.formatJiraReview(reviewContent, prContext);
+      await this.autoReviewService.postJiraComment(jiraKey, jiraReview);
+    }
+
+    if (bitbucketPosted) {
+      console.log(`[Bitbucket] Auto-review completed for PR #${pr.id}`);
+    }
+  }
+
+  /**
    * Handle incoming webhook event
    */
   async handleWebhook(payload: string, signature: string, eventType: string): Promise<void> {
@@ -531,12 +676,31 @@ ${userComment}`;
 
     // 2. Parse event
     const event: BitbucketWebhookEvent = JSON.parse(payload);
+
+    // 3. Check for auto-review trigger (PR created, no @mention needed)
+    if (
+      this.autoReviewEnabled &&
+      eventType === 'pullrequest:created' &&
+      event.pullrequest
+    ) {
+      const fullName = event.repository.full_name;
+      const [workspace, repoSlug] = fullName.split('/');
+
+      // Fire auto-review asynchronously
+      this.handleAutoReview(event, workspace, repoSlug).catch(error => {
+        console.error('[Bitbucket] Auto-review error:', error);
+      });
+
+      // Don't return - still allow @mention handling if present
+    }
+
+    // 4. Parse event for @mention handling
     const parsed = this.parseEvent(event, eventType);
     if (!parsed) return;
 
     const { workspace, repoSlug, type, number, comment, eventName, pullRequest, issue } = parsed;
 
-    // 3. Check @mention
+    // 5. Check @mention (required for manual interactions)
     if (!this.hasMention(comment)) return;
 
     console.log(`[Bitbucket] Processing ${eventName}: ${workspace}/${repoSlug}#${type}:${number}`);
