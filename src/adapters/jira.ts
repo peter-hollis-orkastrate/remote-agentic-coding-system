@@ -94,6 +94,9 @@ export class JiraAdapter implements IPlatformAdapter {
   private apiToken: string;
   private webhookSecret: string;
   private mention: string;
+  private bitbucketUsername?: string;
+  private bitbucketAppPassword?: string;
+  private bitbucketDefaultRepo?: string;
 
   constructor(config: {
     baseUrl: string;
@@ -101,18 +104,29 @@ export class JiraAdapter implements IPlatformAdapter {
     apiToken: string;
     webhookSecret: string;
     mention?: string;
+    bitbucket?: {
+      username: string;
+      appPassword: string;
+      defaultRepo?: string; // Format: workspace/repo-name
+    };
   }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ''); // Remove trailing slash
     this.email = config.email;
     this.apiToken = config.apiToken;
     this.webhookSecret = config.webhookSecret;
     this.mention = config.mention || '@remote-agent';
+    this.bitbucketUsername = config.bitbucket?.username;
+    this.bitbucketAppPassword = config.bitbucket?.appPassword;
+    this.bitbucketDefaultRepo = config.bitbucket?.defaultRepo;
     console.log(
       '[Jira] Adapter initialized for',
       this.baseUrl,
       'with secret:',
       this.webhookSecret.substring(0, 8) + '...'
     );
+    if (this.bitbucketUsername && this.bitbucketDefaultRepo) {
+      console.log('[Jira] Bitbucket auto-clone enabled for:', this.bitbucketDefaultRepo);
+    }
   }
 
   /**
@@ -346,19 +360,90 @@ ${userComment}`;
   }
 
   /**
-   * Ensure repository is cloned and ready
+   * Build authenticated clone URL for Bitbucket
    */
-  private async ensureRepoReady(repoUrl: string, repoPath: string, shouldSync: boolean): Promise<void> {
+  private getAuthenticatedCloneUrl(repoUrl: string): string {
+    if (!this.bitbucketUsername || !this.bitbucketAppPassword) {
+      return repoUrl;
+    }
+
+    // Handle various Bitbucket URL formats
+    // https://bitbucket.org/workspace/repo.git -> https://user:pass@bitbucket.org/workspace/repo.git
+    if (repoUrl.includes('bitbucket.org')) {
+      if (repoUrl.startsWith('https://bitbucket.org')) {
+        return repoUrl.replace(
+          'https://bitbucket.org',
+          `https://${this.bitbucketUsername}:${this.bitbucketAppPassword}@bitbucket.org`
+        );
+      } else if (repoUrl.startsWith('http://bitbucket.org')) {
+        return repoUrl.replace(
+          'http://bitbucket.org',
+          `https://${this.bitbucketUsername}:${this.bitbucketAppPassword}@bitbucket.org`
+        );
+      }
+    }
+
+    return repoUrl;
+  }
+
+  /**
+   * Ensure repository is cloned, synced, and on the correct branch
+   */
+  private async ensureRepoReady(
+    repoUrl: string,
+    repoPath: string,
+    issueKey: string,
+    shouldSync: boolean
+  ): Promise<void> {
+    const branchName = issueKey; // Branch name matches Jira ticket key (e.g., ORDEV-123)
+    let repoExists = false;
+
     try {
       await access(repoPath);
-      if (shouldSync) {
-        console.log('[Jira] Syncing repository');
-        await execAsync(`cd ${repoPath} && git fetch origin && git reset --hard origin/main || git reset --hard origin/master`);
-      }
+      repoExists = true;
     } catch {
+      repoExists = false;
+    }
+
+    if (!repoExists) {
+      // Clone the repo with authentication
+      const authUrl = this.getAuthenticatedCloneUrl(repoUrl);
       console.log(`[Jira] Cloning repository to ${repoPath}`);
-      await execAsync(`git clone ${repoUrl} ${repoPath}`);
+      await execAsync(`git clone ${authUrl} ${repoPath}`);
       await execAsync(`git config --global --add safe.directory '${repoPath}'`);
+    }
+
+    // Fetch and checkout branch
+    try {
+      console.log(`[Jira] Fetching and checking out branch: ${branchName}`);
+      await execAsync(`cd ${repoPath} && git fetch origin`);
+
+      // Try to checkout the branch (may be local or remote)
+      try {
+        await execAsync(`cd ${repoPath} && git checkout ${branchName}`);
+        console.log(`[Jira] Checked out branch: ${branchName}`);
+      } catch {
+        // Branch doesn't exist locally, try to checkout from remote
+        try {
+          await execAsync(`cd ${repoPath} && git checkout -b ${branchName} origin/${branchName}`);
+          console.log(`[Jira] Checked out remote branch: ${branchName}`);
+        } catch {
+          // Branch doesn't exist at all, stay on current branch
+          console.log(`[Jira] Branch ${branchName} not found, staying on default branch`);
+        }
+      }
+
+      // Pull latest changes if syncing
+      if (shouldSync) {
+        try {
+          await execAsync(`cd ${repoPath} && git pull origin ${branchName}`);
+          console.log(`[Jira] Pulled latest changes for branch: ${branchName}`);
+        } catch {
+          console.log(`[Jira] Could not pull branch ${branchName}, may not track remote`);
+        }
+      }
+    } catch (error) {
+      console.error('[Jira] Git operation failed:', error);
     }
   }
 
@@ -447,22 +532,32 @@ ${userComment}`;
     const existingConv = await db.getOrCreateConversation('jira', conversationId);
     const isNewConversation = !existingConv.codebase_id;
 
-    // 6. Try to find linked repository
-    const repoUrl = await this.getLinkedRepository(issueKey);
+    // 6. Try to find linked repository (or use default Bitbucket repo)
+    let repoUrl = await this.getLinkedRepository(issueKey);
+
+    // Fall back to default Bitbucket repo if no linked repo found
+    if (!repoUrl && this.bitbucketDefaultRepo) {
+      repoUrl = `https://bitbucket.org/${this.bitbucketDefaultRepo}.git`;
+      console.log(`[Jira] Using default Bitbucket repo: ${repoUrl}`);
+    }
+
     let codebase: { id: string; name: string } | null = null;
     let repoPath: string | null = null;
     let isNewCodebase = false;
 
-    if (repoUrl && isNewConversation) {
+    if (repoUrl) {
       // Extract repo name from URL
-      const repoName = repoUrl.split('/').pop()?.replace('.git', '') || issue.fields.project.key.toLowerCase();
+      const repoName =
+        repoUrl.split('/').pop()?.replace('.git', '') || issue.fields.project.key.toLowerCase();
       const result = await this.getOrCreateCodebaseForRepo(repoUrl, repoName);
       codebase = result.codebase;
       repoPath = result.repoPath;
       isNewCodebase = result.isNew;
 
-      // Clone repo if needed
-      await this.ensureRepoReady(repoUrl, repoPath, isNewConversation);
+      // Always ensure repo is cloned and on correct branch
+      // - First time: clone and checkout branch
+      // - Subsequent times: fetch and sync branch
+      await this.ensureRepoReady(repoUrl, repoPath, issueKey, !isNewConversation);
 
       // Auto-load commands if new codebase
       if (isNewCodebase) {

@@ -80,12 +80,23 @@ async function main(): Promise<void> {
     process.env.JIRA_API_TOKEN &&
     process.env.JIRA_WEBHOOK_SECRET
   ) {
+    // Check if Bitbucket credentials are available for auto-clone
+    const hasBitbucketCreds =
+      process.env.BITBUCKET_USERNAME && process.env.BITBUCKET_APP_PASSWORD;
+
     jira = new JiraAdapter({
       baseUrl: process.env.JIRA_BASE_URL,
       email: process.env.JIRA_EMAIL,
       apiToken: process.env.JIRA_API_TOKEN,
       webhookSecret: process.env.JIRA_WEBHOOK_SECRET,
       mention: process.env.JIRA_MENTION || '@remote-agent',
+      bitbucket: hasBitbucketCreds
+        ? {
+            username: process.env.BITBUCKET_USERNAME!,
+            appPassword: process.env.BITBUCKET_APP_PASSWORD!,
+            defaultRepo: process.env.BITBUCKET_DEFAULT_REPO,
+          }
+        : undefined,
     });
     await jira.start();
   } else {
