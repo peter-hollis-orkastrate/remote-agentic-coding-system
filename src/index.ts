@@ -11,6 +11,8 @@ import express from 'express';
 import { TelegramAdapter } from './adapters/telegram';
 import { TestAdapter } from './adapters/test';
 import { GitHubAdapter } from './adapters/github';
+import { JiraAdapter } from './adapters/jira';
+import { BitbucketAdapter } from './adapters/bitbucket';
 import { handleMessage } from './orchestrator/orchestrator';
 import { pool } from './db/connection';
 import { ConversationLockManager } from './utils/conversation-lock';
@@ -70,6 +72,46 @@ async function main(): Promise<void> {
     console.log('[GitHub] Adapter not initialized (missing GITHUB_TOKEN or WEBHOOK_SECRET)');
   }
 
+  // Initialize Jira adapter (conditional)
+  let jira: JiraAdapter | null = null;
+  if (
+    process.env.JIRA_BASE_URL &&
+    process.env.JIRA_EMAIL &&
+    process.env.JIRA_API_TOKEN &&
+    process.env.JIRA_WEBHOOK_SECRET
+  ) {
+    jira = new JiraAdapter({
+      baseUrl: process.env.JIRA_BASE_URL,
+      email: process.env.JIRA_EMAIL,
+      apiToken: process.env.JIRA_API_TOKEN,
+      webhookSecret: process.env.JIRA_WEBHOOK_SECRET,
+      mention: process.env.JIRA_MENTION || '@remote-agent',
+    });
+    await jira.start();
+  } else {
+    console.log('[Jira] Adapter not initialized (missing JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, or JIRA_WEBHOOK_SECRET)');
+  }
+
+  // Initialize Bitbucket adapter (conditional)
+  let bitbucket: BitbucketAdapter | null = null;
+  if (
+    process.env.BITBUCKET_WORKSPACE &&
+    process.env.BITBUCKET_USERNAME &&
+    process.env.BITBUCKET_APP_PASSWORD &&
+    process.env.BITBUCKET_WEBHOOK_SECRET
+  ) {
+    bitbucket = new BitbucketAdapter({
+      workspace: process.env.BITBUCKET_WORKSPACE,
+      username: process.env.BITBUCKET_USERNAME,
+      appPassword: process.env.BITBUCKET_APP_PASSWORD,
+      webhookSecret: process.env.BITBUCKET_WEBHOOK_SECRET,
+      mention: process.env.BITBUCKET_MENTION || '@remote-agent',
+    });
+    await bitbucket.start();
+  } else {
+    console.log('[Bitbucket] Adapter not initialized (missing BITBUCKET_WORKSPACE, BITBUCKET_USERNAME, BITBUCKET_APP_PASSWORD, or BITBUCKET_WEBHOOK_SECRET)');
+  }
+
   // Setup Express server
   const app = express();
   const port = process.env.PORT || 3000;
@@ -98,6 +140,56 @@ async function main(): Promise<void> {
       }
     });
     console.log('[Express] GitHub webhook endpoint registered');
+  }
+
+  // Jira webhook endpoint (must use raw body for signature verification)
+  if (jira) {
+    app.post('/webhooks/jira', express.raw({ type: 'application/json' }), async (req, res) => {
+      try {
+        // Jira uses X-Hub-Signature header (similar to GitHub)
+        const signature = (req.headers['x-hub-signature'] || req.headers['x-hub-signature-256']) as string;
+        const payload = (req.body as Buffer).toString('utf-8');
+
+        // Process async (fire-and-forget for fast webhook response)
+        jira.handleWebhook(payload, signature || '').catch(error => {
+          console.error('[Jira] Webhook processing error:', error);
+        });
+
+        return res.status(200).send('OK');
+      } catch (error) {
+        console.error('[Jira] Webhook endpoint error:', error);
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+    console.log('[Express] Jira webhook endpoint registered');
+  }
+
+  // Bitbucket webhook endpoint (must use raw body for signature verification)
+  if (bitbucket) {
+    app.post('/webhooks/bitbucket', express.raw({ type: 'application/json' }), async (req, res) => {
+      try {
+        // Bitbucket uses X-Hub-Signature header
+        const signature = (req.headers['x-hub-signature'] || req.headers['x-hub-signature-256']) as string;
+        // Bitbucket sends the event type in the X-Event-Key header
+        const eventType = req.headers['x-event-key'] as string;
+        const payload = (req.body as Buffer).toString('utf-8');
+
+        if (!eventType) {
+          return res.status(400).json({ error: 'Missing X-Event-Key header' });
+        }
+
+        // Process async (fire-and-forget for fast webhook response)
+        bitbucket.handleWebhook(payload, signature || '', eventType).catch(error => {
+          console.error('[Bitbucket] Webhook processing error:', error);
+        });
+
+        return res.status(200).send('OK');
+      } catch (error) {
+        console.error('[Bitbucket] Webhook endpoint error:', error);
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+    console.log('[Express] Bitbucket webhook endpoint registered');
   }
 
   // JSON parsing for all other endpoints
