@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   console.log('[App] Starting Remote Coding Agent (Telegram + Claude MVP)');
 
   // Validate required environment variables
-  const required = ['DATABASE_URL', 'TELEGRAM_BOT_TOKEN'];
+  const required = ['DATABASE_URL'];
   const missing = required.filter(v => !process.env[v]);
   if (missing.length > 0) {
     console.error('[App] Missing required environment variables:', missing.join(', '));
@@ -287,34 +287,41 @@ async function main(): Promise<void> {
     console.log(`[Express] Health check server listening on port ${port}`);
   });
 
-  // Initialize platform adapter (Telegram)
-  const streamingMode = (process.env.TELEGRAM_STREAMING_MODE || 'stream') as 'stream' | 'batch';
-  const telegram = new TelegramAdapter(process.env.TELEGRAM_BOT_TOKEN!, streamingMode);
+  // Initialize platform adapter (Telegram) - optional
+  let telegram: TelegramAdapter | null = null;
+  if (process.env.TELEGRAM_BOT_TOKEN) {
+    const streamingMode = (process.env.TELEGRAM_STREAMING_MODE || 'stream') as 'stream' | 'batch';
+    telegram = new TelegramAdapter(process.env.TELEGRAM_BOT_TOKEN, streamingMode);
 
-  // Handle text messages
-  telegram.getBot().on('text', async ctx => {
-    const conversationId = telegram.getConversationId(ctx);
-    const message = ctx.message.text;
+    // Handle text messages
+    telegram.getBot().on('text', async ctx => {
+      const conversationId = telegram!.getConversationId(ctx);
+      const message = ctx.message.text;
 
-    if (!message) return;
+      if (!message) return;
 
-    // Fire-and-forget: handler returns immediately, processing happens async
-    lockManager
-      .acquireLock(conversationId, async () => {
-        await handleMessage(telegram, conversationId, message);
-      })
-      .catch(error => {
-        console.error('[Telegram] Failed to process message:', error);
-      });
-  });
+      // Fire-and-forget: handler returns immediately, processing happens async
+      lockManager
+        .acquireLock(conversationId, async () => {
+          await handleMessage(telegram!, conversationId, message);
+        })
+        .catch(error => {
+          console.error('[Telegram] Failed to process message:', error);
+        });
+    });
 
-  // Start bot
-  await telegram.start();
+    // Start bot
+    await telegram.start();
+  } else {
+    console.log('[Telegram] Adapter not initialized (missing TELEGRAM_BOT_TOKEN)');
+  }
 
   // Graceful shutdown
   const shutdown = (): void => {
     console.log('[App] Shutting down gracefully...');
-    telegram.stop();
+    if (telegram) {
+      telegram.stop();
+    }
     pool.end().then(() => {
       console.log('[Database] Connection pool closed');
       process.exit(0);
@@ -325,7 +332,6 @@ async function main(): Promise<void> {
   process.once('SIGTERM', shutdown);
 
   console.log('[App] Remote Coding Agent is ready!');
-  console.log('[App] Send messages to your Telegram bot to get started');
   console.log('[App] Test endpoint available: POST http://localhost:' + port + '/test/message');
 }
 
