@@ -108,11 +108,13 @@ docker compose --profile with-db up -d --build
 
 ### Step 1: Create a Jira API Token
 
-1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage/api-tokens)
+1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
 2. Click **Create API token**
-3. Enter a label (e.g., "Remote Coding Agent")
+3. Enter a label (e.g., "Remote Coding Agent - Jira")
 4. Click **Create**
 5. **Copy the token immediately** - you won't see it again
+
+> **Tip:** You can use the same API token for both Jira and Bitbucket since they share Atlassian's unified token system.
 
 ### Step 2: Configure Environment Variables
 
@@ -168,14 +170,13 @@ The agent will:
 
 > **Note:** As of September 2025, Bitbucket has replaced App Passwords with API Tokens. Existing App Passwords will be disabled on June 9, 2026.
 
-1. Go to [Bitbucket API Tokens](https://bitbucket.org/account/settings/api-tokens/)
-2. Click **Create token**
-3. Enter a name (e.g., "Remote Coding Agent")
-4. Select scopes:
-   - **Repositories**: Read, Write
-   - **Pull requests**: Read, Write
-5. Click **Create**
-6. **Copy the token immediately** - you won't see it again
+1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Click **Create API token**
+3. Enter a label (e.g., "Remote Coding Agent - Bitbucket")
+4. Click **Create**
+5. **Copy the token immediately** - you won't see it again
+
+> **Note:** Bitbucket now uses Atlassian's unified API token system. The same token creation page is used for both Jira and Bitbucket access.
 
 ### Step 2: Configure Environment Variables
 
