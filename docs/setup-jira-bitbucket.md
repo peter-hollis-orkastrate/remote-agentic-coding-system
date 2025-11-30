@@ -108,11 +108,13 @@ docker compose --profile with-db up -d --build
 
 ### Step 1: Create a Jira API Token
 
-1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage/api-tokens)
+1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
 2. Click **Create API token**
-3. Enter a label (e.g., "Remote Coding Agent")
+3. Enter a label (e.g., "Remote Coding Agent - Jira")
 4. Click **Create**
 5. **Copy the token immediately** - you won't see it again
+
+> **Tip:** You can use the same API token for both Jira and Bitbucket since they share Atlassian's unified token system.
 
 ### Step 2: Configure Environment Variables
 
@@ -164,17 +166,24 @@ The agent will:
 
 ## Bitbucket Setup
 
-### Step 1: Create a Bitbucket App Password
+### Step 1: Create a Bitbucket Repository Access Token
 
-1. Go to [Bitbucket App Passwords](https://bitbucket.org/account/settings/app-passwords/)
-2. Click **Create app password**
-3. Enter a label (e.g., "Remote Coding Agent")
-4. Select permissions:
-   - **Repositories**: Read, Write
-   - **Pull requests**: Read, Write
-   - **Issues**: Read, Write (if using Bitbucket Issues)
+> **Note:** Bitbucket has deprecated App Passwords. You now need to create a **Repository Access Token** for git operations.
+
+1. Go to your Bitbucket repository
+2. Click **Repository settings** → **Access tokens** (under "Security")
+3. Click **Create Repository Access Token**
+4. Configure:
+   - **Name**: Remote Coding Agent
+   - **Scopes**: Select `Read` and `Write` for Repository
 5. Click **Create**
-6. **Copy the password immediately** - you won't see it again
+6. **Copy the token immediately** - you won't see it again
+
+> **Important:** When you create the token, Bitbucket shows a clone URL like:
+> ```
+> git clone https://x-token-auth:YOUR_TOKEN@bitbucket.org/workspace/repo.git
+> ```
+> Notice the username is `x-token-auth` (not your email). Use this exact format.
 
 ### Step 2: Configure Environment Variables
 
@@ -183,13 +192,16 @@ Add these to your `.env` file:
 ```env
 # Bitbucket Configuration
 BITBUCKET_WORKSPACE=your_workspace_name
-BITBUCKET_USERNAME=your_bitbucket_username
-BITBUCKET_APP_PASSWORD=your_app_password_from_step_1
+BITBUCKET_USERNAME=x-token-auth
+BITBUCKET_APP_PASSWORD=your_repository_access_token_from_step_1
 BITBUCKET_WEBHOOK_SECRET=generate_a_random_secret_string
 BITBUCKET_MENTION=@remote-agent
 ```
 
-**Note**: `BITBUCKET_WORKSPACE` is the workspace slug (found in your Bitbucket URL: `bitbucket.org/WORKSPACE/repo`)
+**Important Notes:**
+- `BITBUCKET_USERNAME` must be `x-token-auth` when using Repository Access Tokens
+- `BITBUCKET_APP_PASSWORD` is your Repository Access Token (the long string starting with `ATCTT3x...`)
+- `BITBUCKET_WORKSPACE` is the workspace slug (found in your Bitbucket URL: `bitbucket.org/WORKSPACE/repo`)
 
 ### Step 3: Create a Bitbucket Webhook
 
@@ -237,14 +249,17 @@ Add these to your `.env` file:
 
 ```env
 # Bitbucket credentials for authenticated cloning
-BITBUCKET_USERNAME=your_bitbucket_username
-BITBUCKET_APP_PASSWORD=your_app_password
+BITBUCKET_USERNAME=x-token-auth
+BITBUCKET_APP_PASSWORD=ATCTT3x...your_repository_access_token
 
 # Default repository to clone (workspace/repo-name format)
 BITBUCKET_DEFAULT_REPO=your-workspace/your-repo-name
 ```
 
-**Note:** `BITBUCKET_DEFAULT_REPO` uses the format `workspace/repo-name` without `https://` or `.git`.
+**Important Notes:**
+- `BITBUCKET_USERNAME` must be `x-token-auth` when using Repository Access Tokens
+- `BITBUCKET_APP_PASSWORD` is your Repository Access Token
+- `BITBUCKET_DEFAULT_REPO` uses the format `workspace/repo-name` without `https://` or `.git`
 
 ### How It Works
 
@@ -543,8 +558,8 @@ JIRA_MENTION=@remote-agent
 
 # === BITBUCKET ===
 BITBUCKET_WORKSPACE=your_workspace
-BITBUCKET_USERNAME=your_username
-BITBUCKET_APP_PASSWORD=your_app_password
+BITBUCKET_USERNAME=x-token-auth  # MUST be "x-token-auth" for Repository Access Tokens
+BITBUCKET_APP_PASSWORD=ATCTT3x...  # Repository Access Token (not App Password)
 BITBUCKET_WEBHOOK_SECRET=your_random_secret
 BITBUCKET_MENTION=@remote-agent
 BITBUCKET_DEFAULT_REPO=workspace/repo-name  # For Jira auto-clone
