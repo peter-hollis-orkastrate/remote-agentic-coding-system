@@ -430,8 +430,27 @@ ${userComment}`;
    * Get clone URL for repository
    */
   private getCloneUrl(event: BitbucketWebhookEvent): string {
-    const httpsClone = event.repository.links.clone.find(c => c.name === 'https');
-    return httpsClone?.href || event.repository.links.html.href + '.git';
+    // Some webhook events may not include clone links, so we need to handle that
+    const cloneLinks = event.repository?.links?.clone;
+    if (cloneLinks && Array.isArray(cloneLinks)) {
+      const httpsClone = cloneLinks.find(c => c.name === 'https');
+      if (httpsClone?.href) {
+        return httpsClone.href;
+      }
+    }
+
+    // Fallback: construct URL from html link or workspace/repo info
+    if (event.repository?.links?.html?.href) {
+      return event.repository.links.html.href + '.git';
+    }
+
+    // Last resort: construct from full_name or workspace/repo info
+    if (event.repository?.full_name) {
+      return `https://bitbucket.org/${event.repository.full_name}.git`;
+    }
+
+    const repoSlug = event.repository?.name;
+    return `https://bitbucket.org/${this.workspace}/${repoSlug}.git`;
   }
 
   /**

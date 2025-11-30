@@ -367,18 +367,22 @@ ${userComment}`;
       return repoUrl;
     }
 
+    // URL-encode username and password to handle special characters like @ in email addresses
+    const encodedUsername = encodeURIComponent(this.bitbucketUsername);
+    const encodedPassword = encodeURIComponent(this.bitbucketAppPassword);
+
     // Handle various Bitbucket URL formats
     // https://bitbucket.org/workspace/repo.git -> https://user:pass@bitbucket.org/workspace/repo.git
     if (repoUrl.includes('bitbucket.org')) {
       if (repoUrl.startsWith('https://bitbucket.org')) {
         return repoUrl.replace(
           'https://bitbucket.org',
-          `https://${this.bitbucketUsername}:${this.bitbucketAppPassword}@bitbucket.org`
+          `https://${encodedUsername}:${encodedPassword}@bitbucket.org`
         );
       } else if (repoUrl.startsWith('http://bitbucket.org')) {
         return repoUrl.replace(
           'http://bitbucket.org',
-          `https://${this.bitbucketUsername}:${this.bitbucketAppPassword}@bitbucket.org`
+          `https://${encodedUsername}:${encodedPassword}@bitbucket.org`
         );
       }
     }
